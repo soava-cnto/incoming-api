@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pandas
+python-dotenv
+python-multipart   # 👈 ajouté pour UploadFile
+apscheduler        # (si tu veux planifier des tâches)
