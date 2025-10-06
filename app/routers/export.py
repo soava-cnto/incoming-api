@@ -23,13 +23,3 @@ def export_daily(week: str):
 def export_range(start: str, end: str):
     path = ExportService.export_csv_by_week(start, end, f"export_{start}_{end}.csv")
     return {"status": "ok", "file": path}
-
-@router.get("/monthly")
-def export_daily(week: str):
-    path = ExportService.export_csv_by_week(week, week, f"export_{week}.csv")
-    return {"status": "ok", "file": path}
-
-@router.get("/rangeofmonth")
-def export_range(start: str, end: str):
-    path = ExportService.export_csv_by_week(start, end, f"export_{start}_{end}.csv")
-    return {"status": "ok", "file": path}
