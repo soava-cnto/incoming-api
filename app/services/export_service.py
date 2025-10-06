@@ -30,4 +30,20 @@ class ExportService:
         df = pd.read_sql(query, engine)
         df.to_csv(output_path, index=False, encoding="utf-8")
         return os.path.abspath(output_path)
+    
+    @staticmethod
+    def export_all_to_csv(output_dir="export_all_data.csv"):
+        db_writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME)
+        engine = db_writer.get_engine()
+
+        # Si c’est un dossier → crée le fichier à l’intérieur
+        if os.path.isdir(output_dir):
+            output_path = os.path.join(output_dir, "export_all_data.csv")
+        else:
+            output_path = output_dir  # si un chemin complet a été passé
+
+        query = f"SELECT * FROM public.{VIEW_NAME}"
+        df = pd.read_sql(query, engine)
+        df.to_csv(output_path, index=False, encoding="utf-8")
+        return os.path.abspath(output_path)
 

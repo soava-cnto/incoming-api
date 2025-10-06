@@ -1,8 +1,21 @@
+# --- Web API ---
 fastapi
 uvicorn[standard]
+
+# --- Base de données ---
 sqlalchemy
 psycopg2-binary
+
+# --- Traitement de données ---
 pandas
 python-dotenv
-python-multipart   # 👈 ajouté pour UploadFile
-apscheduler        # (si tu veux planifier des tâches)
+python-multipart   # pour UploadFile
+
+# --- Scheduler pour automatisation ---
+apscheduler
+
+# --- Connexion SFTP ---
+paramiko
+
+# --- Encodage / compatibilité ---
+charset-normalizer  # 👈 corrige ton erreur actuelle
