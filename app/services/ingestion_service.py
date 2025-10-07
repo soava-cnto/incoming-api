@@ -1,15 +1,24 @@
+from io import StringIO
 import os
 import logging
 import pandas as pd
+from sqlalchemy import create_engine
 from app.csv_reader import CSVReader
 from app.data_cleaner import DataCleaner
 from app.db_writer import DBWriter
 from app.config import DB_CONFIG, TABLE_NAME, VIEW_NAME, SFTP_CONFIG
 from app.utils.sftp_client import SFTPClient  # 🔹 nouvelle classe
+from app.utils.sftp_csv_reader import SFTPCSVReader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+
+logger = logging.getLogger("AUTO")
+
 class IngestionService:
+    CHUNK_SIZE = 5000
+    BAD_LINES_PATH = "bad_lines.csv"
+    
     @staticmethod
     def process_csv(path: str, include_comment=False):
         file_name = os.path.basename(path)
@@ -50,28 +59,77 @@ class IngestionService:
             return IngestionService.process_csv(path, include_comment)
 
     @staticmethod
-    def process_sftp_file(remote_path: str, include_comment=False):
+    def process_sftp_file(remote_path: str):
+        logger.info(f"[SFTP] Lecture du fichier : {remote_path}")
+
+        # Téléchargement du fichier depuis SFTP
+        sftp = SFTPClient()
+        file_content = sftp.read_file(remote_path)
+        encoding = sftp.detect_encoding(file_content)
+        logger.info(f"[SFTP] Encodage détecté : {encoding}")
+
+        # Lecture CSV avec tolérance
+        str_io = StringIO(file_content.decode(encoding, errors="ignore"))
+        good_rows = []
+        bad_lines = []
+
+        try:
+            for chunk in pd.read_csv(
+                str_io,
+                chunksize=IngestionService.CHUNK_SIZE,
+                sep=",",
+                quotechar='"',
+                on_bad_lines="skip",     # ignorer proprement les lignes invalides
+                encoding=encoding,
+                engine="python"
+            ):
+                good_rows.append(chunk)
+
+        except Exception as e:
+            logger.error(f"Erreur lecture CSV : {e}")
+            raise
+
+        # Fusion des bons morceaux
+        if good_rows:
+            df = pd.concat(good_rows, ignore_index=True)
+            logger.info(f"{len(df)} lignes valides détectées.")
+        else:
+            logger.warning("Aucune ligne valide trouvée.")
+            return "Aucune donnée valide."
+
+        # Sauvegarde des lignes corrompues à part
+        bad_lines = IngestionService.extract_bad_lines(file_content.decode(encoding))
+        if bad_lines:
+            IngestionService.save_bad_lines(bad_lines)
+            logger.warning(f"{len(bad_lines)} lignes invalides sauvegardées dans {IngestionService.BAD_LINES_PATH}")
+
+        # Insertion dans la base
+        IngestionService.insert_into_db(df)
+        return "Ingestion terminée avec succès."
+
+    @staticmethod
+    def extract_bad_lines(content: str):
         """
-        Lecture directe depuis un fichier CSV sur un serveur SFTP
-        sans passer par le disque local.
+        Repère grossièrement les lignes multi-lignes brisées contenant des guillemets non fermés.
         """
-        logging.info(f"Ingestion depuis SFTP: {remote_path}")
-        sftp_client = SFTPClient(SFTP_CONFIG)
-        file_name = os.path.basename(remote_path)
-        writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME)
+        bad_lines = []
+        for line in content.splitlines():
+            if line.count('"') % 2 != 0:  # guillemets non pair → probablement ligne corrompue
+                bad_lines.append(line)
+        return bad_lines
 
-        if writer.already_imported(file_name):
-            writer.close()
-            return {"status": "skipped", "file": file_name}
+    @staticmethod
+    def save_bad_lines(bad_lines):
+        with open(IngestionService.BAD_LINES_PATH, "a", encoding="utf-8") as f:
+            for line in bad_lines:
+                f.write(line + "\n")
 
-        # 🔸 Lecture du CSV distant en mémoire
-        with sftp_client.open_file(remote_path) as remote_file:
-            for chunk in pd.read_csv(remote_file, chunksize=50000):
-                clean_df = DataCleaner.clean(chunk)
-                writer.copy_dataframe(clean_df)
+    @staticmethod
+    def insert_into_db(df: pd.DataFrame):
+        from app.config import DB_CONFIG, TABLE_NAME
 
-        writer.log_import(file_name)
-        writer.close()
-        sftp_client.close()
-
-        return {"status": "success", "file": file_name}
+        engine = create_engine(
+            f"postgresql+psycopg2://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
+        )
+        df.to_sql(TABLE_NAME, con=engine, if_exists="append", index=False)
+        logger.info(f"{len(df)} lignes insérées dans la table {TABLE_NAME}")
