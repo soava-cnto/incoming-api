@@ -1,6 +1,8 @@
+import errno
 from io import StringIO
 import os
 import logging
+from time import time
 import pandas as pd
 from sqlalchemy import create_engine
 from app.csv_reader import CSVReader
@@ -98,58 +100,76 @@ class IngestionService:
     def process_sftp_file(remote_path: str):
         """
         Télécharge un fichier CSV depuis le SFTP, détecte l'encodage,
-        nettoie les colonnes commentaires, normalise les noms de colonnes
-        et insère les données en base.
+        nettoie les colonnes commentaires, normalise les noms de colonnes,
+        vérifie si le fichier a déjà été importé, insère les données en base,
+        et log l'import pour suivi.
+        Si PermissionError, retente toutes les 20 minutes jusqu'à succès.
         """
-        logger.info(f"[SFTP] Début du traitement du fichier {remote_path}")
+        file_name = os.path.basename(remote_path)
+        logger.info(f"[SFTP] Début du traitement du fichier {file_name}")
         sftp_client = None
+        db_writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME)
 
         try:
-            # Connexion au SFTP
-            sftp_client = SFTPClient(SFTP_CONFIG)
+            # Vérification si le fichier a déjà été importé
+            if db_writer.already_imported(file_name):
+                db_writer.close()
+                logger.info(f"[SFTP] Fichier {file_name} déjà importé, skipped.")
+                return {"status": "skipped", "file": file_name}
 
-            # Lecture du fichier distant
-            raw_data = sftp_client.read_file(remote_path)
-            logger.info(f"[SFTP] Lecture réussie du fichier {remote_path} ({len(raw_data)} octets)")
+            while True:
+                try:
+                    # Connexion au SFTP
+                    sftp_client = SFTPClient(SFTP_CONFIG)
 
-            # Détection de l'encodage
-            encoding = sftp_client.detect_encoding(raw_data)
-            logger.info(f"[SFTP] Encodage détecté : {encoding}")
+                    # Lecture du fichier distant
+                    raw_data = sftp_client.read_file(remote_path)
+                    logger.info(f"[SFTP] Lecture réussie du fichier {file_name} ({len(raw_data)} octets)")
 
-            # Nettoyage du CSV pour supprimer la colonne "COMMENTAIRE"
-            str_io = IngestionService.clean_csv_remove_comment_column(raw_data, encoding)
+                    # Détection de l'encodage
+                    encoding = sftp_client.detect_encoding(raw_data)
+                    logger.info(f"[SFTP] Encodage détecté : {encoding}")
 
-            # Initialisation du writer / engine
-            db_writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME)
-            engine = db_writer.get_engine()
+                    # Nettoyage du CSV pour supprimer la colonne "COMMENTAIRE"
+                    str_io = IngestionService.clean_csv_remove_comment_column(raw_data, encoding)
 
-            inserted_rows = 0
+                    inserted_rows = 0
 
-            # Lecture du CSV par chunk
-            for chunk in pd.read_csv(
-                str_io,
-                chunksize=IngestionService.CHUNK_SIZE,
-                dtype=str,
-                encoding=encoding,
-                on_bad_lines="warn"
-            ):
-                # Nettoyage complet via DataCleaner
-                clean_df = DataCleaner.clean(chunk)
+                    # Lecture du CSV par chunk
+                    for chunk in pd.read_csv(
+                        str_io,
+                        chunksize=IngestionService.CHUNK_SIZE,
+                        dtype=str,
+                        encoding=encoding,
+                        on_bad_lines="warn"
+                    ):
+                        # Nettoyage complet via DataCleaner
+                        clean_df = DataCleaner.clean(chunk)
 
-                # Insertion dans la base
-                clean_df.to_sql(TABLE_NAME, engine, if_exists="append", index=False)
-                inserted_rows += len(clean_df)
+                        # Insertion dans la base
+                        db_writer.copy_dataframe(clean_df)
+                        inserted_rows += len(clean_df)
 
-            logger.info(f"[INGESTION] {inserted_rows} lignes insérées dans la base depuis {remote_path}.")
-            return {"status": "success", "rows": inserted_rows, "encoding": encoding}
+                    # Log du fichier importé pour suivi
+                    db_writer.log_import(file_name)
+                    logger.info(f"[INGESTION] {inserted_rows} lignes insérées dans la base depuis {file_name}.")
+                    return {"status": "success", "file": file_name, "rows": inserted_rows, "encoding": encoding}
+
+                except PermissionError as e:
+                    if getattr(e, "errno", None) == errno.EACCES or "[Errno 13]" in str(e):
+                        logger.warning(f"[SFTP] Permission denied pour {file_name}, nouvelle tentative dans 20 minutes...")
+                        time.sleep(20*60)  # attend 20 minutes
+                    else:
+                        raise  # relance pour les autres erreurs
 
         except Exception as e:
-            logger.error(f"Erreur lors de l’ingestion SFTP : {e}", exc_info=True)
-            return {"status": "error", "message": str(e)}
+            logger.error(f"Erreur lors de l’ingestion SFTP du fichier {file_name} : {e}", exc_info=True)
+            return {"status": "error", "file": file_name, "message": str(e)}
 
         finally:
             if sftp_client:
                 sftp_client.close()
+            db_writer.close()
                 
     @staticmethod
     def insert_into_db(df: pd.DataFrame):
