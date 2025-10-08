@@ -59,77 +59,108 @@ class IngestionService:
             return IngestionService.process_csv(path, include_comment)
 
     @staticmethod
+    def clean_csv_remove_comment_column(raw_data: bytes, encoding: str) -> StringIO:
+        """
+        Supprime la dernière colonne (COMMENTAIRE) de chaque ligne CSV avant lecture.
+        Cette approche évite les erreurs liées aux retours à la ligne dans le champ commentaire.
+        """
+        decoded = raw_data.decode(encoding, errors="ignore").splitlines()
+
+        # Si le fichier est vide
+        if not decoded:
+            raise ValueError("Fichier CSV vide ou illisible")
+
+        # Détection de la colonne COMMENTAIRE
+        header = decoded[0].split(",")
+        if "COMMENTAIRE" in header:
+            comment_idx = header.index("COMMENTAIRE")
+            logger.info(f"[CLEAN] Colonne 'COMMENTAIRE' détectée à l’index {comment_idx}, suppression.")
+        else:
+            comment_idx = None
+            logger.warning("[CLEAN] Aucune colonne 'COMMENTAIRE' détectée, rien à supprimer.")
+
+        cleaned_lines = []
+        for line in decoded:
+            # on coupe avant la colonne commentaire si elle existe
+            if comment_idx is not None:
+                parts = line.split(",")
+                if len(parts) > comment_idx:
+                    parts = parts[:comment_idx]
+                cleaned_lines.append(",".join(parts))
+            else:
+                cleaned_lines.append(line)
+
+        cleaned_csv = "\n".join(cleaned_lines)
+        return StringIO(cleaned_csv)
+
+
+    @staticmethod
     def process_sftp_file(remote_path: str):
-        logger.info(f"[SFTP] Lecture du fichier : {remote_path}")
-
-        # Téléchargement du fichier depuis SFTP
-        sftp = SFTPClient()
-        file_content = sftp.read_file(remote_path)
-        encoding = sftp.detect_encoding(file_content)
-        logger.info(f"[SFTP] Encodage détecté : {encoding}")
-
-        # Lecture CSV avec tolérance
-        str_io = StringIO(file_content.decode(encoding, errors="ignore"))
-        good_rows = []
-        bad_lines = []
+        """
+        Télécharge un fichier CSV depuis le SFTP, détecte l'encodage,
+        nettoie les colonnes commentaires, normalise les noms de colonnes
+        et insère les données en base.
+        """
+        logger.info(f"[SFTP] Début du traitement du fichier {remote_path}")
+        sftp_client = None
 
         try:
+            # Connexion au SFTP
+            sftp_client = SFTPClient(SFTP_CONFIG)
+
+            # Lecture du fichier distant
+            raw_data = sftp_client.read_file(remote_path)
+            logger.info(f"[SFTP] Lecture réussie du fichier {remote_path} ({len(raw_data)} octets)")
+
+            # Détection de l'encodage
+            encoding = sftp_client.detect_encoding(raw_data)
+            logger.info(f"[SFTP] Encodage détecté : {encoding}")
+
+            # Nettoyage du CSV pour supprimer la colonne "COMMENTAIRE"
+            str_io = IngestionService.clean_csv_remove_comment_column(raw_data, encoding)
+
+            # Initialisation du writer / engine
+            db_writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME)
+            engine = db_writer.get_engine()
+
+            inserted_rows = 0
+
+            # Lecture du CSV par chunk
             for chunk in pd.read_csv(
                 str_io,
                 chunksize=IngestionService.CHUNK_SIZE,
-                sep=",",
-                quotechar='"',
-                on_bad_lines="skip",     # ignorer proprement les lignes invalides
+                dtype=str,
                 encoding=encoding,
-                engine="python"
+                on_bad_lines="warn"
             ):
-                good_rows.append(chunk)
+                # Nettoyage complet via DataCleaner
+                clean_df = DataCleaner.clean(chunk)
+
+                # Insertion dans la base
+                clean_df.to_sql(TABLE_NAME, engine, if_exists="append", index=False)
+                inserted_rows += len(clean_df)
+
+            logger.info(f"[INGESTION] {inserted_rows} lignes insérées dans la base depuis {remote_path}.")
+            return {"status": "success", "rows": inserted_rows, "encoding": encoding}
 
         except Exception as e:
-            logger.error(f"Erreur lecture CSV : {e}")
-            raise
+            logger.error(f"Erreur lors de l’ingestion SFTP : {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
 
-        # Fusion des bons morceaux
-        if good_rows:
-            df = pd.concat(good_rows, ignore_index=True)
-            logger.info(f"{len(df)} lignes valides détectées.")
-        else:
-            logger.warning("Aucune ligne valide trouvée.")
-            return "Aucune donnée valide."
-
-        # Sauvegarde des lignes corrompues à part
-        bad_lines = IngestionService.extract_bad_lines(file_content.decode(encoding))
-        if bad_lines:
-            IngestionService.save_bad_lines(bad_lines)
-            logger.warning(f"{len(bad_lines)} lignes invalides sauvegardées dans {IngestionService.BAD_LINES_PATH}")
-
-        # Insertion dans la base
-        IngestionService.insert_into_db(df)
-        return "Ingestion terminée avec succès."
-
-    @staticmethod
-    def extract_bad_lines(content: str):
-        """
-        Repère grossièrement les lignes multi-lignes brisées contenant des guillemets non fermés.
-        """
-        bad_lines = []
-        for line in content.splitlines():
-            if line.count('"') % 2 != 0:  # guillemets non pair → probablement ligne corrompue
-                bad_lines.append(line)
-        return bad_lines
-
-    @staticmethod
-    def save_bad_lines(bad_lines):
-        with open(IngestionService.BAD_LINES_PATH, "a", encoding="utf-8") as f:
-            for line in bad_lines:
-                f.write(line + "\n")
-
+        finally:
+            if sftp_client:
+                sftp_client.close()
+                
     @staticmethod
     def insert_into_db(df: pd.DataFrame):
-        from app.config import DB_CONFIG, TABLE_NAME
+        """
+        Insère un DataFrame déjà nettoyé dans la base.
+        """
+        clean_df = DataCleaner.clean(df)
 
         engine = create_engine(
-            f"postgresql+psycopg2://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
+            f"postgresql+psycopg2://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
+            f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
         )
-        df.to_sql(TABLE_NAME, con=engine, if_exists="append", index=False)
-        logger.info(f"{len(df)} lignes insérées dans la table {TABLE_NAME}")
+        clean_df.to_sql(TABLE_NAME, con=engine, if_exists="append", index=False)
+        logger.info(f"{len(clean_df)} lignes insérées dans la table {TABLE_NAME}")
