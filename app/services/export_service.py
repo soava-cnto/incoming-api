@@ -42,7 +42,9 @@ class ExportService:
         else:
             output_path = output_dir  # si un chemin complet a été passé
 
-        query = f"SELECT * FROM public.{VIEW_NAME}"
+        query = f"""
+            SELECT * FROM public.{VIEW_NAME}
+        """
         df = pd.read_sql(query, engine)
         df.to_csv(output_path, index=False, encoding="utf-8")
         return os.path.abspath(output_path)
