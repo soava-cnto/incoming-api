@@ -38,7 +38,7 @@ class ExportService:
 
         # Si c’est un dossier → crée le fichier à l’intérieur
         if os.path.isdir(output_dir):
-            output_path = os.path.join(output_dir, "export_all_data.csv")
+            output_path = os.path.join(output_dir, "incoming_all_data.csv")
         else:
             output_path = output_dir  # si un chemin complet a été passé
 
