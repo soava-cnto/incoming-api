@@ -12,7 +12,7 @@ DB_CONFIG = {
 }
 
 TABLE_NAME = os.getenv("TABLE_NAME", "call_logs")
-VIEW_NAME = os.getenv("VIEW_NAME", "v_incoming_reiteration")
+VIEW_NAME = os.getenv("VIEW_NAME", "v_incoming_groupe_suivi")
 
 SFTP_CONFIG = {
     "host": "41.188.35.93",

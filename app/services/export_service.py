@@ -32,7 +32,7 @@ class ExportService:
         return os.path.abspath(output_path)
     
     @staticmethod
-    def export_all_to_csv(output_dir="export_all_data.csv"):
+    def export_all_to_csv(output_dir="incoming_all_data.csv"):
         db_writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME)
         engine = db_writer.get_engine()
 

@@ -25,7 +25,7 @@ def export_range(start: str, end: str):
     return {"status": "ok", "file": path}
 
 @router.get("/alldata")
-def export_all(output_dir: str = "D:/Utilisateurs/soava.rakotomanana/Documents/Flashprod"):
+def export_all(output_dir: str = "D:/Utilisateurs/soava.rakotomanana/OneDrive - Axian Group/Documents/Flashprod"):
     path = ExportService.export_all_to_csv(output_dir)
     return {"status": "ok", "file": path}
 
