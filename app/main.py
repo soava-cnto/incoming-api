@@ -17,7 +17,7 @@ app = FastAPI(title="Incoming API", version="1.0")
 
 # 🚀 Scheduler (tâche quotidienne à 1h00)
 job_scheduler = BackgroundScheduler()   # 👈 nouveau nom
-job_scheduler.add_job(auto_ingest_yesterday, "cron", hour=7, minute=42)
+job_scheduler.add_job(auto_ingest_yesterday, "cron", hour=7, minute=40)
 job_scheduler.start()
 
 # 🚀 Inclusion des routers FastAPI

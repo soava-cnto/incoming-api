@@ -1,6 +1,6 @@
 import pandas as pd
 from app.db_writer import DBWriter
-from app.config import DB_CONFIG, TABLE_NAME, VIEW_NAME
+from app.config import DB_CONFIG, TABLE_NAME, VIEW_NAME, VIEW_FLASHPROD
 from datetime import date
 import os
 
@@ -33,7 +33,7 @@ class ExportService:
     
     @staticmethod
     def export_all_to_csv(output_dir="./directory"):
-        db_writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME)
+        db_writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME, VIEW_FLASHPROD)
         engine = db_writer.get_engine()
 
         # Si c’est un dossier → crée le fichier à l’intérieur
@@ -44,6 +44,24 @@ class ExportService:
 
         query = f"""
             SELECT * FROM public.{VIEW_NAME}
+        """
+        df = pd.read_sql(query, engine)
+        df.to_csv(output_path, index=False, encoding="utf-8")
+        return os.path.abspath(output_path)
+    
+    @staticmethod
+    def export_flashprod_to_csv(output_dir="./directory"):
+        db_writer = DBWriter(DB_CONFIG, TABLE_NAME,VIEW_NAME, VIEW_FLASHPROD)
+        engine = db_writer.get_engine()
+
+        # Si c’est un dossier → crée le fichier à l’intérieur
+        if os.path.isdir(output_dir):
+            output_path = os.path.join(output_dir, "flashprod_data.csv")
+        else:
+            output_path = output_dir  # si un chemin complet a été passé
+
+        query = f"""
+            SELECT * FROM public.{VIEW_FLASHPROD}
         """
         df = pd.read_sql(query, engine)
         df.to_csv(output_path, index=False, encoding="utf-8")

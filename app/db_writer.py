@@ -4,7 +4,7 @@ from io import StringIO
 import pandas as pd
 
 class DBWriter:
-    def __init__(self, db_config: dict, table_name: str, view_name: str ):
+    def __init__(self, db_config: dict, table_name: str, view_name: str , view_flashprod: str):
         self.db_config = db_config
         self.table_name = table_name
         self.engine = create_engine(
@@ -13,6 +13,7 @@ class DBWriter:
         )
         self._ensure_log_table()
         self.view_name = view_name
+        self.view_flashprod = view_flashprod
 
     def _ensure_log_table(self):
         """Crée la table de log si elle n’existe pas"""
@@ -69,3 +70,6 @@ class DBWriter:
 
     def get_view_name(self):
         return self.view_name
+    
+    def get_view_flashprod(self):
+        return self.view_flashprod

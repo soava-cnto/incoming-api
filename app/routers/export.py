@@ -29,3 +29,8 @@ def export_all(output_dir: str = "D:/Utilisateurs/soava.rakotomanana/OneDrive - 
     path = ExportService.export_all_to_csv(output_dir)
     return {"status": "ok", "file": path}
 
+@router.get("/flashproddata")
+def export_flashprod(output_dir: str = "D:/Utilisateurs/soava.rakotomanana/OneDrive - Axian Group/Documents/Flashprod"):
+    path = ExportService.export_flashprod_to_csv(output_dir)
+    return {"status": "ok", "file": path}
+
