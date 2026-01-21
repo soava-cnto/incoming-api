@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from app.csv_reader import CSVReader
 from app.data_cleaner import DataCleaner
 from app.db_writer import DBWriter
-from app.config import DB_CONFIG, TABLE_NAME, VIEW_NAME, SFTP_CONFIG
+from app.config import DB_CONFIG, TABLE_NAME, VIEW_NAME, SFTP_CONFIG, VIEW_FLASHPROD
 from app.utils.sftp_client import SFTPClient  # 🔹 nouvelle classe
 from app.utils.sftp_csv_reader import SFTPCSVReader
 
@@ -24,7 +24,7 @@ class IngestionService:
     @staticmethod
     def process_csv(path: str, include_comment=False):
         file_name = os.path.basename(path)
-        writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME)
+        writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME, VIEW_FLASHPROD)
 
         if writer.already_imported(file_name):
             writer.close()
@@ -108,7 +108,7 @@ class IngestionService:
         file_name = os.path.basename(remote_path)
         logger.info(f"[SFTP] Début du traitement du fichier {file_name}")
         sftp_client = None
-        db_writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME)
+        db_writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME, VIEW_FLASHPROD)
 
         try:
             # Vérification si le fichier a déjà été importé

@@ -23,8 +23,10 @@ def ingest_path(path: str):
 def ingest_from_sftp(remote_path: str = "/home/connecteo/files/Received/"):
     """
     Ingestion directe depuis un fichier CSV sur un serveur SFTP.
-    Exemple d'appel :
+    \n Exemple d'appel :
       POST /ingest/sftp?remote_path=/remote/path/mon_fichier.csv
+      \n
+      exemple nom de fichier: 2025-01-01_VocalCom_Incoming.csv
     """
     return IngestionService.process_sftp_file(remote_path)
 
