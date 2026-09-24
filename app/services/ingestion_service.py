@@ -1,46 +1,82 @@
 import errno
-from io import StringIO
 import os
 import logging
-from time import time
+from time import sleep
 import pandas as pd
 from sqlalchemy import create_engine
+from io import StringIO
 from app.csv_reader import CSVReader
 from app.data_cleaner import DataCleaner
 from app.db_writer import DBWriter
 from app.config import DB_CONFIG, TABLE_NAME, VIEW_NAME, SFTP_CONFIG, VIEW_FLASHPROD
-from app.utils.sftp_client import SFTPClient  # 🔹 nouvelle classe
-from app.utils.sftp_csv_reader import SFTPCSVReader
+from app.utils.sftp_client import SFTPClient
+from app.utils.csv_preprocessor import CSVPreprocessor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
 
 logger = logging.getLogger("AUTO")
 
 class IngestionService:
+    """
+    Service centralisé pour l'ingestion de fichiers CSV.
+    
+    Intègre le prétraitement (CSVPreprocessor) et le nettoyage (DataCleaner)
+    pour garantir une cohérence à travers toutes les routes d'ingestion.
+    """
+    
     CHUNK_SIZE = 5000
     BAD_LINES_PATH = "bad_lines.csv"
     
     @staticmethod
     def process_csv(path: str, include_comment=False):
+        """
+        Ingère un fichier CSV local.
+        
+        Utilise CSVReader pour lire le fichier avec prétraitement complet
+        (nettoyage brut + parsing + nettoyage DataF).
+        
+        Args:
+            path: Chemin du fichier CSV
+            include_comment: Si False, exclut la colonne COMMENTAIRE
+            
+        Returns:
+            Dict avec status, file, rows
+        """
         file_name = os.path.basename(path)
         writer = DBWriter(DB_CONFIG, TABLE_NAME, VIEW_NAME, VIEW_FLASHPROD)
 
-        if writer.already_imported(file_name):
+        try:
+            if writer.already_imported(file_name):
+                writer.close()
+                logger.info(f"[INGEST] Fichier {file_name} déjà importé, skipped.")
+                return {"status": "skipped", "file": file_name}
+
+            reader = CSVReader(
+                path, 
+                chunksize=IngestionService.CHUNK_SIZE, 
+                include_comment=include_comment, encoding="utf-16"
+            )
+
+            total_rows = 0
+            for chunk in reader.get_chunks():
+                # Le chunk est déjà nettoyé par CSVReader → CSVPreprocessor
+                clean_df = DataCleaner.clean(chunk)
+                writer.copy_dataframe(clean_df)
+                total_rows += len(clean_df)
+
+            writer.log_import(file_name)
+            logger.info(f"[INGEST] {total_rows} lignes insérées depuis {file_name}.")
+            return {"status": "success", "file": file_name, "rows": total_rows}
+        
+        except Exception as e:
+            logger.error(
+                f"Erreur lors de l'ingestion du fichier {file_name} : {e}", 
+                exc_info=True
+            )
+            return {"status": "error", "file": file_name, "message": str(e)}
+        
+        finally:
             writer.close()
-            return {"status": "skipped", "file": file_name}
-
-        reader = CSVReader(path, chunksize=50000, include_comment=include_comment)
-
-        total_rows = 0
-        for i, chunk in enumerate(reader.get_chunks()):
-            clean_df = DataCleaner.clean(chunk)
-            writer.copy_dataframe(clean_df)
-            total_rows += len(clean_df)
-
-        writer.log_import(file_name)
-        writer.close()
-        return {"status": "success", "file": file_name, "rows": total_rows}
     
     
     @staticmethod
@@ -99,11 +135,19 @@ class IngestionService:
     @staticmethod
     def process_sftp_file(remote_path: str):
         """
-        Télécharge un fichier CSV depuis le SFTP, détecte l'encodage,
-        nettoie les colonnes commentaires, normalise les noms de colonnes,
-        vérifie si le fichier a déjà été importé, insère les données en base,
-        et log l'import pour suivi.
-        Si PermissionError, retente toutes les 20 minutes jusqu'à succès.
+        Télécharge et ingère un fichier CSV depuis un serveur SFTP.
+        
+        Détecte l'encodage, applique le prétraitement CSVPreprocessor,
+        gère le filtrage de la colonne COMMENTAIRE, insère les données
+        et log l'import.
+        
+        En cas de PermissionError, retente toutes les 20 minutes.
+        
+        Args:
+            remote_path: Chemin du fichier sur le serveur SFTP
+            
+        Returns:
+            Dict avec status, file, rows, encoding (ou error)
         """
         file_name = os.path.basename(remote_path)
         logger.info(f"[SFTP] Début du traitement du fichier {file_name}")
@@ -127,21 +171,35 @@ class IngestionService:
                     logger.info(f"[SFTP] Lecture réussie du fichier {file_name} ({len(raw_data)} octets)")
 
                     # Détection de l'encodage
-                    encoding = sftp_client.detect_encoding(raw_data)
-                    logger.info(f"[SFTP] Encodage détecté : {encoding}")
+                    encoding = "utf-8"
+                    # encoding = sftp_client.detect_encoding(raw_data)
+                    # encoding = "ISO-8859-1"
+                    # logger.info(f"[SFTP] Encodage détecté : {encoding}")
 
-                    # Nettoyage du CSV pour supprimer la colonne "COMMENTAIRE"
-                    str_io = IngestionService.clean_csv_remove_comment_column(raw_data, encoding)
+                    # Déterminer les colonnes à exclure (COMMENTAIRE)
+                    usecols = None
+                    cleaned_content = CSVPreprocessor.preprocess_raw_content(raw_data, encoding)
+                    try:
+                        df_temp = pd.read_csv(
+                            StringIO(cleaned_content),
+                            sep=",",
+                            engine="python",
+                            nrows=0
+                        )
+                        if "COMMENTAIRE" in df_temp.columns:
+                            usecols = [c for c in df_temp.columns if c.strip().upper() != "COMMENTAIRE"]
+                            logger.info(f"[SFTP] Colonne COMMENTAIRE exclue du traitement.")
+                    except Exception as e:
+                        logger.warning(f"[SFTP] Impossible de filtrer COMMENTAIRE : {e}")
 
                     inserted_rows = 0
 
-                    # Lecture du CSV par chunk
-                    for chunk in pd.read_csv(
-                        str_io,
-                        chunksize=IngestionService.CHUNK_SIZE,
-                        dtype=str,
+                    # Lecture du CSV par chunk avec prétraitement
+                    for chunk in CSVPreprocessor.read_csv_in_chunks(
+                        raw_data,
                         encoding=encoding,
-                        on_bad_lines="warn"
+                        chunksize=IngestionService.CHUNK_SIZE,
+                        usecols=usecols
                     ):
                         # Nettoyage complet via DataCleaner
                         clean_df = DataCleaner.clean(chunk)
@@ -157,13 +215,19 @@ class IngestionService:
 
                 except PermissionError as e:
                     if getattr(e, "errno", None) == errno.EACCES or "[Errno 13]" in str(e):
-                        logger.warning(f"[SFTP] Permission denied pour {file_name}, nouvelle tentative dans 20 minutes...")
-                        time.sleep(20*60)  # attend 20 minutes
+                        logger.warning(
+                            f"[SFTP] Permission denied pour {file_name}, "
+                            f"nouvelle tentative dans 20 minutes..."
+                        )
+                        sleep(20 * 60)
                     else:
-                        raise  # relance pour les autres erreurs
+                        raise
 
         except Exception as e:
-            logger.error(f"Erreur lors de l’ingestion SFTP du fichier {file_name} : {e}", exc_info=True)
+            logger.error(
+                f"Erreur lors de l'ingestion SFTP du fichier {file_name} : {e}",
+                exc_info=True
+            )
             return {"status": "error", "file": file_name, "message": str(e)}
 
         finally:
@@ -174,13 +238,33 @@ class IngestionService:
     @staticmethod
     def insert_into_db(df: pd.DataFrame):
         """
-        Insère un DataFrame déjà nettoyé dans la base.
+        Insère un DataFrame nettoyé directement dans la base PostgreSQL.
+        
+        Utile pour les insertions programmatiques en dehors des flux d'ingestion standards.
+        
+        Args:
+            df: DataFrame à insérer
         """
-        clean_df = DataCleaner.clean(df)
+        try:
+            clean_df = DataCleaner.clean(df)
 
-        engine = create_engine(
-            f"postgresql+psycopg2://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
-            f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
-        )
-        clean_df.to_sql(TABLE_NAME, con=engine, if_exists="append", index=False)
-        logger.info(f"{len(clean_df)} lignes insérées dans la table {TABLE_NAME}")
+            engine = create_engine(
+                f"postgresql+psycopg2://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
+                f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
+            )
+            clean_df.to_sql(
+                TABLE_NAME, 
+                con=engine, 
+                if_exists="append", 
+                index=False
+            )
+            logger.info(
+                f"[INSERT] {len(clean_df)} lignes insérées dans la table "
+                f"{TABLE_NAME}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Erreur lors de l'insertion dans la base : {e}",
+                exc_info=True
+            )
+            raise

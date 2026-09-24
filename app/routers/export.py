@@ -34,3 +34,13 @@ def export_flashprod(output_dir: str = "D:/Utilisateurs/soava.rakotomanana/OneDr
     path = ExportService.export_flashprod_to_csv(output_dir)
     return {"status": "ok", "file": path}
 
+@router.get("/flashproddata/weekly")
+def export_flashprod(start_week: str, end_week: str, output_dir: str = "D:/Utilisateurs/soava.rakotomanana/OneDrive - Axian Group/Documents/Flashprod"):
+    path = ExportService.export_all_to_csv_by_week(start_week, end_week, output_dir)
+    return {"status": "ok", "file": path}
+
+@router.get("/mvola/monthly")
+def export_base_mvola(start_year: int, end_year: int, output_dir: str = "D:/Utilisateurs/soava.rakotomanana/OneDrive - Axian Group/Documents/Flashprod"):
+    path = ExportService.export_all_mvola(start_year, end_year, output_dir)
+    return {"status": "ok", "file": path}
+

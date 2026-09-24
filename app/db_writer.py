@@ -19,7 +19,7 @@ class DBWriter:
         """Crée la table de log si elle n’existe pas"""
         with self.engine.connect() as conn:
             conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS imported_files (
+                CREATE TABLE IF NOT EXISTS incoming.imported_files (
                     id SERIAL PRIMARY KEY,
                     file_name TEXT UNIQUE,
                     imported_at TIMESTAMP DEFAULT now()
@@ -31,7 +31,7 @@ class DBWriter:
         """Vérifie si le fichier a déjà été importé"""
         with self.engine.connect() as conn:
             result = conn.execute(
-                text("SELECT 1 FROM imported_files WHERE file_name = :f"),
+                text("SELECT 1 FROM incoming.imported_files WHERE file_name = :f"),
                 {"f": file_name}
             ).fetchone()
             return result is not None
@@ -40,7 +40,7 @@ class DBWriter:
         """Consigne qu’un fichier a été importé"""
         with self.engine.connect() as conn:
             conn.execute(
-                text("INSERT INTO imported_files (file_name) VALUES (:f) ON CONFLICT DO NOTHING"),
+                text("INSERT INTO incoming.imported_files (file_name) VALUES (:f) ON CONFLICT DO NOTHING"),
                 {"f": file_name}
             )
             conn.commit()

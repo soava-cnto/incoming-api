@@ -1,8 +1,10 @@
 from fastapi import FastAPI, Request
+from app.jobs.mvola_export_job import auto_export_mvola_data
 from app.routers import ingest, export, scheduler as scheduler_router  # 👈 on renomme ici
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.jobs.sftp_ingest_job import auto_ingest_yesterday
+from app.jobs.flashprod_export_job import auto_export_flashprod
 import logging
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -15,9 +17,12 @@ logging.basicConfig(
 
 app = FastAPI(title="Incoming API", version="1.0")
 
-# 🚀 Scheduler (tâche quotidienne à 1h00)
-job_scheduler = BackgroundScheduler()   # 👈 nouveau nom
-job_scheduler.add_job(auto_ingest_yesterday, "cron", hour=7, minute=40)
+# 🚀 Scheduler (tâches quotidiennes)
+job_scheduler = BackgroundScheduler()
+job_scheduler.add_job(auto_ingest_yesterday, "cron", hour=7, minute=59)
+job_scheduler.add_job(auto_export_flashprod, "cron", hour=8, minute=30)
+job_scheduler.add_job(auto_export_mvola_data, "cron", hour=9, minute=30)
+
 job_scheduler.start()
 
 # 🚀 Inclusion des routers FastAPI
